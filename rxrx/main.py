@@ -31,19 +31,25 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.contrib import summary
 from tensorflow.python.estimator import estimator
+from tensorflow.core.protobuf import rewriter_config_pb2
 
 from rxrx import input as rxinput
 from rxrx.official_resnet import resnet_v1
 
+def on_device_train_and_eval_loops(func):
+    setattr(func, "step_marker_location", "STEP_MARK_AT_SECOND_LEVEL_WHILE_LOOP")
+    return func
+
+
 DEFAULT_INPUT_FN_PARAMS = {
     'tfrecord_dataset_buffer_size': 256,
     'tfrecord_dataset_num_parallel_reads': None,
-    'parallel_interleave_cycle_length': 32,
+    'parallel_interleave_cycle_length': 64,
     'parallel_interleave_block_length': 1,
     'parallel_interleave_buffer_output_elements': None,
     'parallel_interleave_prefetch_input_elements': None,
-    'map_and_batch_num_parallel_calls': 128,
-    'transpose_num_parallel_calls': 128,
+    'map_and_batch_num_parallel_calls': 32,
+    'transpose_num_parallel_calls': 32,
     'prefetch_buffer_size': tf.contrib.data.AUTOTUNE,
 }
 
@@ -54,13 +60,8 @@ GLOBAL_PIXEL_STATS = (np.array([6.74696984, 14.74640167, 10.51260864,
                                  7.83451711, 4.701167, 5.43130431]))
 
 
-def resnet_model_fn(features, labels, mode, params, n_classes, num_train_images,
-                    data_format, transpose_input, train_batch_size,
-                    momentum, weight_decay, base_learning_rate,  warmup_epochs,
-                    use_tpu, iterations_per_loop, model_dir, tf_precision,
-                    resnet_depth):
+def resnet_model_fn(features, labels, mode, params):
     """The model_fn for ResNet to be used with TPUEstimator.
-
     Args:
     features: `Tensor` of batched images
     labels: `Tensor` of labels for the data samples
@@ -73,6 +74,21 @@ def resnet_model_fn(features, labels, mode, params, n_classes, num_train_images,
     Returns:
         A `TPUEstimatorSpec` for the model
     """
+    n_classes = params['n_classes']
+    num_train_images = params['num_train_images']
+    data_format = params['data_format']
+    transpose_input = params['transpose_input']
+    train_batch_size = params['train_batch_size']
+    iterations_per_loop = params['iterations_per_loop']
+    tf_precision = params['tf_precision']
+    momentum = params['momentum']
+    weight_decay = params['weight_decay']
+    base_learning_rate = params['base_learning_rate']
+    warmup_epochs = params['warmup_epochs']
+    model_dir = params['model_dir']
+    use_tpu = params['use_tpu']
+    resnet_depth = params['resnet_depth']
+
     if isinstance(features, dict):
         features = features['feature']
 
@@ -136,7 +152,7 @@ def resnet_model_fn(features, labels, mode, params, n_classes, num_train_images,
     if mode == tf.estimator.ModeKeys.TRAIN:
         # Compute the current epoch and associated learning rate from global_step.
         global_step = tf.train.get_global_step()
-        steps_per_epoch = tf.cast(num_train_images / train_batch_size, tf.float32)
+        steps_per_epoch = num_train_images / train_batch_size
         current_epoch = (tf.cast(global_step, tf.float32) / steps_per_epoch)
         warmup_steps = warmup_epochs * steps_per_epoch
 
@@ -248,7 +264,7 @@ def resnet_model_fn(features, labels, mode, params, n_classes, num_train_images,
         mode=mode,
         loss=loss,
         train_op=train_op,
-        host_call=host_call,
+        host_call=None,
         eval_metrics=eval_metrics)
 
 def main(use_tpu,
@@ -267,11 +283,13 @@ def main(use_tpu,
          data_format,
          transpose_input,
          tf_precision,
+         save_checkpoint_steps,
          n_classes,
          momentum,
          weight_decay,
          base_learning_rate,
          warmup_epochs,
+         iterations_per_loop,
          input_fn_params=DEFAULT_INPUT_FN_PARAMS,
          resnet_depth=50):
 
@@ -285,8 +303,9 @@ def main(use_tpu,
     steps_per_epoch = (num_train_images // train_batch_size)
     train_steps = steps_per_epoch * train_epochs
     current_step = estimator._load_global_step_from_checkpoint_dir(model_dir) # pylint: disable=protected-access,line-too-long
-    iterations_per_loop = steps_per_epoch * epochs_per_loop
-    log_step_count_steps = steps_per_epoch * log_step_count_epochs
+    #iterations_per_loop = steps_per_epoch * epochs_per_loop
+    iterations_per_loop = iterations_per_loop
+    log_step_count_steps = 64
 
 
     tpu_cluster_resolver = tf.contrib.cluster_resolver.TPUClusterResolver(
@@ -296,37 +315,41 @@ def main(use_tpu,
     config = tf.contrib.tpu.RunConfig(
         cluster=tpu_cluster_resolver,
         model_dir=model_dir,
-        save_summary_steps=iterations_per_loop,
-        save_checkpoints_steps=iterations_per_loop,
+        #save_summary_steps=iterations_per_loop,
+        save_checkpoints_steps=save_checkpoint_steps,
         log_step_count_steps=log_step_count_steps,
+        session_config=tf.ConfigProto(
+            graph_options=tf.GraphOptions(
+                rewrite_options=rewriter_config_pb2.RewriterConfig(
+                    disable_meta_optimizer=True))),
         tpu_config=tf.contrib.tpu.TPUConfig(
             iterations_per_loop=iterations_per_loop,
             num_shards=num_cores,
             per_host_input_for_training=tf.contrib.tpu.InputPipelineConfig.
             PER_HOST_V2))  # pylint: disable=line-too-long
 
-    model_fn = functools.partial(
-        resnet_model_fn,
-        n_classes=n_classes,
-        num_train_images=num_train_images,
-        data_format=data_format,
-        transpose_input=transpose_input,
-        train_batch_size=train_batch_size,
-        iterations_per_loop=iterations_per_loop,
-        tf_precision=tf_precision,
-        momentum=momentum,
-        weight_decay=weight_decay,
-        base_learning_rate=base_learning_rate,
-        warmup_epochs=warmup_epochs,
-        model_dir=model_dir,
-        use_tpu=use_tpu,
-        resnet_depth=resnet_depth)
-
+    params = {
+        "n_classes": n_classes,
+        "num_train_images": num_train_images,
+        "data_format": data_format,
+        "transpose_input": transpose_input,
+        "train_batch_size": train_batch_size,
+        "iterations_per_loop": iterations_per_loop,
+        "tf_precision": tf_precision,
+        "momentum": momentum,
+        "weight_decay": weight_decay,
+        "base_learning_rate": base_learning_rate,
+        "warmup_epochs": warmup_epochs,
+        "model_dir": model_dir,
+        "use_tpu": use_tpu,
+        "resnet_depth": resnet_depth,
+    }
 
     resnet_classifier = tf.contrib.tpu.TPUEstimator(
         use_tpu=use_tpu,
-        model_fn=model_fn,
+        model_fn=resnet_model_fn,
         config=config,
+        params=params,
         train_batch_size=train_batch_size,
         export_to_tpu=False)
 
@@ -340,11 +363,14 @@ def main(use_tpu,
     train_input_fn = functools.partial(rxinput.input_fn,
             input_fn_params=input_fn_params,
             tf_records_glob=train_glob,
-            pixel_stats=GLOBAL_PIXEL_STATS,
+            #pixel_stats=GLOBAL_PIXEL_STATS,
+            pixel_stats=None,
             transpose_input=transpose_input,
             use_bfloat16=use_bfloat16)
 
-
+    @on_device_train_and_eval_loops
+    def train():
+        resnet_classifier.train(input_fn=train_input_fn, max_steps=train_steps)
 
     tf.logging.info('Training for %d steps (%.2f epochs in total). Current'
                     ' step %d.', train_steps, train_steps / steps_per_epoch,
@@ -352,7 +378,7 @@ def main(use_tpu,
 
     start_timestamp = time.time()  # This time will include compilation time
 
-    resnet_classifier.train(input_fn=train_input_fn, max_steps=train_steps)
+    train()
 
     tf.logging.info('Finished training up to step %d. Elapsed seconds %d.',
                     train_steps, int(time.time() - start_timestamp))
@@ -486,6 +512,11 @@ if __name__ == '__main__':
         default='bfloat16',
         choices=['bfloat16', 'float32'],
         help=('Tensorflow precision type used when defining the network.'))
+    p.add_argument(
+        '--save_checkpoint_steps',
+        type=int,
+        default=1024,
+        help=('How many steps before checkpoint saved'))
 
     # Optimizer Parameters
 
@@ -501,6 +532,11 @@ if __name__ == '__main__':
         '--warmup-epochs',
         type=int,
         default=5,
+    )
+    p.add_argument(
+        '--iterations-per-loop',
+        type=int,
+        default=100,
     )
     args = p.parse_args()
     args = vars(args)

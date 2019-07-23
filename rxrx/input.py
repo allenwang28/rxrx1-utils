@@ -46,13 +46,13 @@ def parse_example(value, use_bfloat16=True, pixel_stats=None):
 
     keys_to_features = {
         'image': tf.FixedLenFeature((), tf.string),
-        'well': tf.FixedLenFeature((), tf.string),
-        'well_type': tf.FixedLenFeature((), tf.string),
-        'plate': tf.FixedLenFeature((), tf.int64),
-        'site': tf.FixedLenFeature((), tf.int64),
-        'cell_type': tf.FixedLenFeature((), tf.string),
-        'sirna': tf.FixedLenFeature((), tf.int64),
-        'experiment': tf.FixedLenFeature((), tf.string)
+        #'well': tf.FixedLenFeature((), tf.string),
+        #'well_type': tf.FixedLenFeature((), tf.string),
+        #'plate': tf.FixedLenFeature((), tf.int64),
+        #'site': tf.FixedLenFeature((), tf.int64),
+        #'cell_type': tf.FixedLenFeature((), tf.string),
+        'sirna': tf.FixedLenFeature((), tf.int64, -1),
+        #'experiment': tf.FixedLenFeature((), tf.string)
     }
 
     image_shape = [512, 512, 6]
@@ -68,7 +68,8 @@ def parse_example(value, use_bfloat16=True, pixel_stats=None):
     if use_bfloat16:
         image = tf.image.convert_image_dtype(image, dtype=tf.bfloat16)
 
-    label = parsed["sirna"]
+    label = tf.cast(
+        tf.reshape(parsed["sirna"], shape=[]), dtype=tf.int32)
 
     return image, label
 
@@ -109,7 +110,9 @@ def input_fn(tf_records_glob,
             prefetch_input_elements=input_fn_params[
                 'parallel_interleave_prefetch_input_elements']))
 
-    images_dataset = images_dataset.shuffle(2048).repeat()
+    #images_dataset = images_dataset.shuffle(2048).repeat()
+    images_dataset = images_dataset.cache().apply(
+            tf.contrib.data.shuffle_and_repeat(2048))
 
     # examples dataset
     dataset = images_dataset.apply(
