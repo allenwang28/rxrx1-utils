@@ -42,7 +42,7 @@ def set_shapes(transpose_input, batch_size, images, labels):
 
     return images, labels
 
-def parse_example(value, use_bfloat16=True, pixel_stats=None):
+def parse_example(value, use_bfloat16=True):
 
     keys_to_features = {
         'image': tf.FixedLenFeature((), tf.string),
@@ -54,10 +54,6 @@ def parse_example(value, use_bfloat16=True, pixel_stats=None):
     image_raw = tf.decode_raw(parsed['image'], tf.uint8)
     image = tf.reshape(image_raw, image_shape)
     image.set_shape(image_shape)
-
-    if pixel_stats is not None:
-        mean, std = pixel_stats
-        image = (tf.cast(image, tf.float32) - mean) / std
 
     if use_bfloat16:
         image = tf.image.convert_image_dtype(image, dtype=tf.bfloat16)
