@@ -77,13 +77,21 @@ def parse_example(value, use_bfloat16=True, pixel_stats=None):
 DEFAULT_PARAMS = dict(batch_size=512)
 
 
-def input_fn(tf_records_glob,
-             input_fn_params,
-             params=None,
-             use_bfloat16=False,
-             pixel_stats = None,
-             transpose_input=True,
-             shuffle_buffer=64):
+def input_fn(params):
+#def input_fn(tf_records_glob,
+#             input_fn_params,
+#             params=None,
+#             use_bfloat16=False,
+#             pixel_stats = None,
+#             transpose_input=True,
+#             shuffle_buffer=64):
+    input_fn_params = params['input_fn_params']
+    tf_records_glob = params['tf_records_glob']
+    use_bfloat16 = params['use_bfloat16']
+    pixel_stats = params['pixel_stats']
+    transpose_input = params['transpose_input']
+    shuffle_buffer = params['shuffle_buffer']
+
 
     batch_size = params['batch_size']
 
@@ -110,9 +118,9 @@ def input_fn(tf_records_glob,
             prefetch_input_elements=input_fn_params[
                 'parallel_interleave_prefetch_input_elements']))
 
-    #images_dataset = images_dataset.shuffle(2048).repeat()
-    images_dataset = images_dataset.cache().apply(
-            tf.contrib.data.shuffle_and_repeat(2048))
+    images_dataset = images_dataset.shuffle(2048).repeat()
+    #images_dataset = images_dataset.cache().apply(
+    #        tf.contrib.data.shuffle_and_repeat(2048))
 
     # examples dataset
     dataset = images_dataset.apply(

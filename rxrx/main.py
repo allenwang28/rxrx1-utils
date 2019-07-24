@@ -101,7 +101,14 @@ def resnet_model_fn(features, labels, mode, params):
         features = tf.transpose(features, [0, 3, 1, 2])
 
     if transpose_input and mode != tf.estimator.ModeKeys.PREDICT:
+        #image_size = tf.sqrt(tf.shape(features)[0] / (6 * tf.shape(labels)[0]))
+        #features = tf.reshape(features, [image_size, image_size, 6, -1])
+        features = tf.reshape(features, [512, 512, 6, -1])
         features = tf.transpose(features, [3, 0, 1, 2])  # HWCN to NHWC
+    
+    # Normalize the image to zero mean and unit variance
+    features -= tf.constant(GLOBAL_PIXEL_STATS[0], shape=[1,1,6], dtype=features.dtype)
+    features /= tf.constant(GLOBAL_PIXEL_STATS[1], shape=[1,1,6], dtype=features.dtype)
 
     # This nested function allows us to avoid duplicating the logic which
     # builds the network, for different values of --precision.
@@ -264,7 +271,7 @@ def resnet_model_fn(features, labels, mode, params):
         mode=mode,
         loss=loss,
         train_op=train_op,
-        host_call=None,
+        host_call=host_call,
         eval_metrics=eval_metrics)
 
 def main(use_tpu,
@@ -328,6 +335,11 @@ def main(use_tpu,
             per_host_input_for_training=tf.contrib.tpu.InputPipelineConfig.
             PER_HOST_V2))  # pylint: disable=line-too-long
 
+    use_bfloat16 = (tf_precision == 'bfloat16')
+
+    train_glob = os.path.join(url_base_path, 'train', '*.tfrecord')
+
+
     params = {
         "n_classes": n_classes,
         "num_train_images": num_train_images,
@@ -343,6 +355,12 @@ def main(use_tpu,
         "model_dir": model_dir,
         "use_tpu": use_tpu,
         "resnet_depth": resnet_depth,
+        'input_fn_params': input_fn_params,
+        'tf_records_glob': train_glob,
+        'pixel_stats': None,
+        'transpose_input': transpose_input,
+        'use_bfloat16': use_bfloat16,
+        'shuffle_buffer': 64,
     }
 
     resnet_classifier = tf.contrib.tpu.TPUEstimator(
@@ -354,10 +372,6 @@ def main(use_tpu,
         export_to_tpu=False)
 
 
-    use_bfloat16 = (tf_precision == 'bfloat16')
-
-    train_glob = os.path.join(url_base_path, 'train', '*.tfrecord')
-
     tf.logging.info("Train glob: {}".format(train_glob))
 
     train_input_fn = functools.partial(rxinput.input_fn,
@@ -368,9 +382,6 @@ def main(use_tpu,
             transpose_input=transpose_input,
             use_bfloat16=use_bfloat16)
 
-    @on_device_train_and_eval_loops
-    def train():
-        resnet_classifier.train(input_fn=train_input_fn, max_steps=train_steps)
 
     tf.logging.info('Training for %d steps (%.2f epochs in total). Current'
                     ' step %d.', train_steps, train_steps / steps_per_epoch,
@@ -378,7 +389,7 @@ def main(use_tpu,
 
     start_timestamp = time.time()  # This time will include compilation time
 
-    train()
+    resnet_classifier.train(input_fn=rxinput.input_fn, max_steps=train_steps)
 
     tf.logging.info('Finished training up to step %d. Elapsed seconds %d.',
                     train_steps, int(time.time() - start_timestamp))
